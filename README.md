@@ -142,3 +142,6 @@ Even with automated review, human experts must verify:
 - Signal: X3DH, PQXDH
 - Attacks: Bleichenbacher (1998), ROBOT (2017), FREAK/Logjam, KRACK, Triple Handshake
 
+---
+
+**Last updated:** July 2026
