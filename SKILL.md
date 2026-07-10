@@ -7,13 +7,6 @@ description: >
   "compare", or "model" the design of a crypto protocol. NEVER use for
   implementation review (constant-time, side channels, RNG internals, memory
   zeroing, fuzzing, library CVEs).
-trigger:
-  - "review this protocol"
-  - "audit the handshake"
-  - "find protocol-level flaws"
-  - "analyze the crypto design"
-  - "compare protocol X vs Y"
-  - "review the PQ upgrade"
 ---
 
 # Cryptographic Protocol Review Skill (Design-Level)
@@ -96,14 +89,14 @@ that are impossible under the chosen model.
 
 ### 2.4 Handshake analysis
 For every message check:
-- Freshness of nonces/ephemerals; nonce space large enough to prevent cycling within a session (RD7).
+- Freshness of nonces/ephemerals; for random nonces, limit messages per key well below the birthday bound; for counters, ensure monotonicity and no overflow (RD7).
 - Identity authenticated to the peer's transcript (S5).
 - Nothing committed before it is authenticated.
 - Transcript covers all negotiation params (version, cipher, group, extensions).
 - Transcript hash construction is unambiguous and collision/extension-resistant in context (CP5: equivalent-transcript or prefix-injection attacks must not yield the same handshake hash).
 - Key confirmation present (Finished/MAC over transcript) (K11).
 - Per-direction keys, not shared bidirectionally (K6).
-  - Noise pattern matches the required auth/FS level (MF1); HPKE Auth/AuthPSK relies on the sender's static KEM key for authentication—ensure the static public key is bound to the claimed identity and add an explicit key-confirmation MAC over the shared secret when the threat model requires it (MF2).
+  - Noise pattern matches the required auth/FS level (MF1); HPKE Auth/AuthPSK authentication properties reviewed separately (MF2).
 - PSK resumption bound to prior session's identity and transcript (R8);
   cross-session reuse requires prior peer input.
 - 0-RTT replayable within the recipient's anti-replay window by
@@ -112,7 +105,7 @@ For every message check:
   binding (timestamp or monotonic counter) and is rejected past
   its max_age; stale resumption must be gated by a server-side check.
 - KEM: ML-KEM uses implicit rejection — decapsulation returns a
-  pseudorandom shared secret for any ciphertext, so there is no ⊥ path and
+  pseudorandom shared secret for any ciphertext, so there is no rejection/failure path and
   no decapsulation-failure oracle. Explicit-rejection KEMs reveal valid vs
   invalid ciphertexts; prefer implicit rejection, or limit probing and
   ensure rejections are indistinguishable. Any public-key/ciphertext/length
@@ -126,7 +119,7 @@ For every message check:
   shared secret (K10). A classical DH exchange or a mutual KEM exchange
   (each party encapsulates to an independent key) satisfies this; a
   single-encaps KEM (ML-KEM) on its own does not — combine it with a
-  contributory component.
+  contributory component (see C7 for decapsulation-failure oracle risk).
 - KEM public key is authenticated to the peer's identity / transcript
   (PQ2); the identity key or the authenticated transcript binds the KEM pk so MITM cannot
   swap it.
@@ -184,7 +177,7 @@ Trace every identity/name to the key that authenticates it. Flag:
 - channel-bound but not identity-bound keys (A2/UKS),
 - identity bound to unauthenticated channel (A4/KCI),
 - channel ID reuse across users (A3),
-- same key reused across protocol / version contexts (A7),
+- same key reused across protocol / version / purpose contexts (A7),
 - challenge-response without direction tag — reflection possible (A6),
 - identity misbinding: parties disagree on who shares the key (A5),
 - group ID not bound to membership (GP1, GP3),
@@ -200,14 +193,15 @@ ECDH curves < 224, Dual_EC_DRBG, ANSI X9.31 PRNG, curves lacking standardized do
 (e.g., anomalous curves, supersingular curves with low embedding degree
 used outside pairing-friendly constructions, non-standard parameters).
 
-Acceptable: AES-GCM, AES-GCM-SIV (RFC 8452), AES-CCM, ChaCha20-Poly1305,
+Acceptable: AES-GCM, AES-GCM-SIV (RFC 8452; misuse-resistant), AES-CCM, ChaCha20-Poly1305,
 SHA-2/3, BLAKE2 (RFC 7693), BLAKE3 (non-NIST; use where compliance permits), HMAC-SHA-256/384/512, HKDF,
 X25519/X448 (ECDH), Ed25519/Ed448 (use Ed25519ctx or Ed448 with a context
 string as a domain separator when cross-protocol or purpose separation is required,
 per RFC 8032 §7.1), P-256/P-384/P-521, ECDSA with RFC 6979 nonces, RSA-PSS/OAEP,
-ML-KEM (FIPS 203), ML-DSA (FIPS 204; lattice-based, formerly CRYSTALS-Dilithium),
-SLH-DSA (FIPS 205; hash-based, formerly SPHINCS+).
-Choose PQ parameter sets to match the security target (e.g., ML-KEM-768/1024, ML-DSA-65/87).
+ML-KEM (FIPS 203), ML-DSA (FIPS 204; lattice-based, formerly CRYSTALS-Dilithium;
+use a distinct `ctx` string per protocol/purpose for domain separation),
+SLH-DSA (FIPS 205; hash-based, formerly SPHINCS+; same `ctx` guidance).
+Choose PQ parameter sets to match the security target (e.g., ML-KEM-512/768/1024, ML-DSA-44/65/87).
 
 Flag for special review: regional algorithms — GOST R 34.10/34.11
 (Russia), SM2/SM3/SM4/SM9 (China); confirm domain parameters, KDF
@@ -238,8 +232,9 @@ If a proof is claimed in `proof-sketch.md`, verify the reduction target
 threat model, the assumptions are listed explicitly, and any ideal-model
 assumptions (ROM, ICM) are consistent with the chosen primitives. Flag
 missing multi-instance / multi-key lemmas where multi-recipient settings
-are claimed, and honest-vs-malicious recipient mismatches in CPA→CCA
-upgrades. If the protocol claims a goal but provides no reduction, that
+are claimed, honest-vs-malicious recipient mismatches in CPA→CCA
+upgrades, and inconsistent modeling of KEM decapsulation failures
+(implicit vs explicit rejection) relative to the adversary's oracle access. If the protocol claims a goal but provides no reduction, that
 is itself a finding (not a pass).
 
 ### 2.10 Attack-pattern checker
@@ -251,7 +246,7 @@ references, fix suggestion. Do not invent CVEs.
 
 | Severity | Definition |
 |----------|------------|
-| Critical | Trivial break of EA/KA/KS/IND/FS by DY adversary |
+| Critical | Fundamental break of core properties (EA/KA/KS/IND/FS) under the baseline DY model — catastrophic for any deployment |
 | High | Break under realistic adversary (MITM, malicious peer) |
 | Medium | Weakened property, bounded downgrade window, or a reasoning gap that could materially affect a goal |
 | Low | Footgun / design smell / future-proofing |
@@ -271,7 +266,7 @@ Check every pattern below. Mark Yes/No/N/A with one-line reasoning.
 - A4 — Key compromise impersonation (KCI).
 - A5 — Identity misbinding: parties disagree on who shares the key.
 - A6 — Reflection / selfie attack.
-- A7 — Cross-protocol key reuse: same key material in multiple protocol contexts.
+- A7 — Cross-protocol or cross-purpose key reuse: same key material in multiple protocol contexts or for different cryptographic purposes (e.g., signing and key agreement).
 - A8 — Trust-on-first-use without key-change detection: after the first
   connection, no mechanism exists to detect or reject a MITM-forced key
   swap on subsequent connections.
@@ -346,8 +341,9 @@ Check every pattern below. Mark Yes/No/N/A with one-line reasoning.
   TLS 1.2 RSA key exchange). Use RSA-OAEP (RFC 8017).
 - C16 — AEAD authentication tag truncated below 128 bits without
   justification (e.g., a 64-bit tag reduces forgery resistance to
-  ~2^64 online queries). AES-GCM and modern AEADs ship 128-bit tags;
-  deliberate shorter tags need explicit rationale.
+  ~2^64 online queries). AES-GCM and ChaCha20-Poly1305 use 128-bit tags
+  by design; AES-CCM permits shorter tags (e.g., TLS 1.3 CCM_8) but they
+  must be justified by the threat model.
 
 ### Forward / future / post-compromise
 - F1 — No ephemeral contribution to session key.
@@ -383,8 +379,9 @@ Check every pattern below. Mark Yes/No/N/A with one-line reasoning.
   binding missing or ignored (GM/T 0009 §5.1).
 - S9 — SM2 key format confused with X9.62/X9.63 EC key; parameter-set
     mismatch enables cross-protocol attack.
-- S10 — ML-DSA / SLH-DSA signature context string (`ctx`) omitted or reused across
-  protocol operations (FIPS 204 / FIPS 205).
+- S10 — ML-DSA / SLH-DSA signature context string (`ctx`) reused across protocol
+  operations, or omitted where cross-protocol/purpose domain separation is required
+  (FIPS 204 / FIPS 205).
 
 ### Negotiation / downgrade
 - N1 — Cipher suite list not committed to handshake.
@@ -443,7 +440,7 @@ Check every pattern below. Mark Yes/No/N/A with one-line reasoning.
 - P1 — Password verifier equivalent to password.
 - P2 — Offline dictionary attack on transcripts.
 - P3 — No rate limiting on authentication attempts.
-- P3b — No client puzzle / proof-of-work on session establishment.
+- P3b — No client puzzle / proof-of-work; DoS-gating on session establishment is absent (P3b does not replace anti-replay — 0-RTT and resumption anti-replay are separate requirements, cf. R7/R7b/R8).
 
 ### Revocation / recovery
 - REV1 — No key revocation mechanism.
@@ -522,7 +519,7 @@ See goals.md, threat-model.md, invariants.md, primitives.md, proof-sketch.md.
 ## 5. Brief Protocol Notes
 
 - **TLS 1.3** — downgrade protected by `supported_versions` + transcript + downgrade random; 0-RTT replayable by design. ECDHE requires the all-zero shared-secret check for X25519/X448. Standalone ML-KEM key agreement is OPTIONAL via draft-ietf-tls-mlkem; the ECDHE+ML-KEM hybrid is OPTIONAL via draft-ietf-tls-ecdhe-mlkem. Without a PQ key-agreement mechanism, long-term confidentiality is vulnerable to harvest-now/decrypt-later (HNDL) by a future quantum adversary. If HNDL resistance is a goal, a PQ mechanism (standalone or hybrid) is required.
-- **X3DH → PQXDH** — PQXDH combines X25519 (4 DH outputs in the classic X3DH set: identity×SPK, ephemeral×IK, ephemeral×SPK, optional ephemeral×OPK) with ML-KEM-encapsulated shared secret via HKDF. The HKDF info label is a fixed, protocol-versioned string that MUST be domain-separated from X3DH; verify the exact label against the target spec. Watch: downgrade window to classical-only X3DH (both components must contribute independently; PQ3), authenticate PQ public key under identity key (PQ2), bind PQ ciphertext to the handshake identity (PQ4).
+- **X3DH → PQXDH** — PQXDH combines X25519 (4 DH outputs in the classic X3DH set: identity×SPK, ephemeral×IK, ephemeral×SPK, optional ephemeral×OPK) with ML-KEM-encapsulated shared secret via HKDF. The HKDF info label is a fixed, protocol-versioned string that MUST be domain-separated from X3DH; verify the exact label against the target spec. Both the X25519 and ML-KEM components must each contribute independently to the final secret — a MITM who strips the PQ key share can force classical-only X3DH (PQ3 gap; both components must be present and independently derived). Additionally: authenticate PQ public key under identity key (PQ2), bind PQ ciphertext to the handshake identity (PQ4).
 - **OTRv3 / OTRv4** — Off-the-Record messaging protocols built for deniability and forward secrecy. OTRv3 uses an online AKE + Socialist Millionaire Protocol for authentication, and conceals public keys from network observers. OTRv4 adds offline/online handshakes and a double-ratchet-like messaging layer, but dropped public-key concealment; verify the handshake model and deniability claims against the target spec.
 - **vault1317** — Signal-inspired protocol that adds ring-signature-based deniability and public-key/metadata concealment. Review ring-signature member binding, handshake identity hiding, and leakage through handshake timing/size.
 
@@ -530,14 +527,44 @@ See goals.md, threat-model.md, invariants.md, primitives.md, proof-sketch.md.
 
 ## 6. References
 
-- RFC 8446 (TLS 1.3), RFC 9180 (HPKE), RFC 9420 (MLS), RFC 8032 (Ed25519),
-  draft-ietf-tls-mlkem (standalone ML-KEM for TLS 1.3), draft-ietf-tls-ecdhe-mlkem
-  (ECDHE-ML-KEM hybrid for TLS 1.3).
-- Signal: X3DH, PQXDH.
-- OTR: OTRv3 (https://otr.cypherpunks.ca/Protocol-v3-4.0.0.html), OTRv4
-  (https://github.com/otrv4/otrv4/blob/master/otrv4.md).
-- vault1317: https://github.com/hardenedvault/vault1317
-  (paper: vault1317.pdf in repo).
-- NIST FIPS 186-5 (ECDSA), FIPS 203 (ML-KEM), FIPS 204 (ML-DSA), FIPS 205 (SLH-DSA; hash-based, formerly SPHINCS+), SP 800-56A Rev. 3 (key establishment), SP 800-131A Rev. 3.
-- Tools: ProVerif, Tamarin, Verifpal.
-- Attacks: Bleichenbacher, ROBOT, FREAK/Logjam, KRACK, Triple Handshake.
+**IETF / RFCs:**
+- TLS 1.3: https://www.rfc-editor.org/rfc/rfc8446
+- HPKE: https://www.rfc-editor.org/rfc/rfc9180
+- MLS: https://www.rfc-editor.org/rfc/rfc9420
+- Ed25519: https://www.rfc-editor.org/rfc/rfc8032
+- PQ/T Hybrid Terminology: https://www.rfc-editor.org/rfc/rfc9794
+- ML-KEM for TLS 1.3 (draft): https://datatracker.ietf.org/doc/draft-ietf-tls-mlkem/
+- ECDHE-ML-KEM hybrid for TLS 1.3 (draft): https://datatracker.ietf.org/doc/draft-ietf-tls-ecdhe-mlkem/
+
+**Signal protocols:**
+- X3DH: https://signal.org/docs/specifications/x3dh/
+- PQXDH: https://signal.org/docs/specifications/pqxdh/
+
+**OTR:**
+- OTRv3: https://otr.cypherpunks.ca/Protocol-v3-4.0.0.html
+- OTRv4: https://github.com/otrv4/otrv4/blob/master/otrv4.md
+
+**vault1317:**
+- https://github.com/hardenedvault/vault1317 (paper: vault1317.pdf in repo)
+
+**NIST standards (csrc.nist.gov):**
+- FIPS 186-5 (ECDSA): https://csrc.nist.gov/pubs/fips/186-5/final
+- FIPS 203 (ML-KEM): https://csrc.nist.gov/pubs/fips/203/final
+- FIPS 204 (ML-DSA): https://csrc.nist.gov/pubs/fips/204/final
+- FIPS 205 (SLH-DSA): https://csrc.nist.gov/pubs/fips/205/final
+- SP 800-56A Rev. 3 (key establishment): https://csrc.nist.gov/pubs/sp/800/56/a/r3/final
+- SP 800-56C Rev. 2 (KDF): https://csrc.nist.gov/pubs/sp/800/56/c/r2/final
+- SP 800-131A Rev. 2 (algorithm transitions): https://csrc.nist.gov/pubs/sp/800/131/a/r2/final
+- SP 800-227 (KEM recommendations): https://csrc.nist.gov/pubs/sp/800/227/final
+
+**Chinese crypto (GM/T series — not freely online; cite by standard number):**
+- GM/T 0009-2012 (SM2 digital signature algorithm)
+- GM/T 0024-2014 (SSL/TLS protocol using SM2/SM3/SM4)
+- GM/T 0069-2018 (SM4-GCM authenticated encryption)
+
+**Analysis tools:**
+- ProVerif: https://proverif.inria.fr/
+- Tamarin: https://tamarin-prover.github.io/
+- Verifpal: https://verifpal.com/
+
+**Attacks:** Bleichenbacher, ROBOT, FREAK/Logjam, KRACK, Triple Handshake.
