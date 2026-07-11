@@ -1,147 +1,135 @@
 # Crypto Protocol Review
 
-**DO NOT ROLL YOUR OWN FUCKING CRYPTO.**
-Unless you are a cryptography engineer with peer-reviewed credentials, use audited standards. This tool is a reference, not a replacement for expert review.
-
----
+**Do not roll your own crypto.** Unless you are a cryptography engineer with peer-reviewed expertise, use audited standards. This project is a review aid, not a replacement for expert review.
 
 ## Overview
 
-This project provides a structured methodology for reviewing cryptographic protocol designs at the specification level. The `SKILL.md` defines a 10-step review pipeline covering handshake flows, key derivation, threat models, state machines, and attack pattern catalogs.
+This project provides a structured methodology for reviewing cryptographic protocol designs at the specification level. `SKILL.md` defines a 10-step review pipeline covering handshake flows, key derivation, threat models, state machines, negotiation, binding, primitive selection, and attack-pattern checks.
 
-## ⚠️ Important Limitations
+## Important Limitations
 
-**AI-generated reviews can miss critical vulnerabilities, especially in cryptography.**
+AI-generated reviews can miss critical vulnerabilities, especially in cryptography.
 
-This tool is designed to:
-- Help security auditors reduce initial review workload
-- Provide structured checklist coverage
-- Identify common attack patterns
+This project helps reviewers:
 
-**This tool does NOT replace:**
+- Reduce initial review workload
+- Apply a consistent checklist
+- Identify common protocol-level attack patterns
+
+It does not replace:
+
 - Expert cryptography engineering review
-- Formal verification (ProVerif, Tamarin)
-- Implementation security audit (constant-time, side channels)
-- Peer-reviewed cryptographic primitives
-
-**Cryptography engineering is serious.** Missteps lead to:
-- Catastrophic breaks (POODLE, Heartbleed, FREAK)
-- National-security-grade vulnerabilities
-- Irreversible data exposure
-
-**When in doubt, consult experts. When shipping, use standards with 10+ years of scrutiny.**
-
----
+- Formal verification with tools such as ProVerif or Tamarin
+- Implementation audit for side channels, constant-time behavior, RNG internals, or memory safety
+- Peer-reviewed protocol and primitive design
 
 ## SKILL.md Usage
 
-The skill is designed for reviewing protocol designs (not implementations).
+The skill is designed for protocol design review, not implementation review.
 
 ### When to Use
 
-- Reviewing a new protocol handshake design
+- Reviewing a protocol handshake design
 - Auditing protocol-level security claims
-- Comparing protocol variants (TLS 1.2 vs 1.3, X3DH vs PQXDH)
-- Finding downgrade/pathway issues in protocol negotiation
+- Comparing protocol variants
+- Finding downgrade, replay, key-binding, or negotiation issues
 
-### How to Use
+### Pipeline
 
-1. Load `SKILL.md` into your review session
-2. Follow the 10-step pipeline:
-   ```
-   spec-extractor → protocol-model.json
-   security-goal-extractor → goals.md
-   threat-model-builder → threat-model.md
-   handshake-analyzer → handshake-flow.md
-   state-machine-auditor → state-machine.md
-   invariant-checker → invariants.md
-   naming-binding-auditor → naming.md
-   primitive-selector → primitives.md
-   proof-strategy-checker → proof-sketch.md
-   attack-pattern-checker → findings.md
-   ```
-3. Cross-reference findings against the attack catalog (§3)
-4. Assign severity (Critical/High/Medium/Low/Info)
+```text
+spec-extractor -> protocol-model.json
+security-goal-extractor -> goals.md
+threat-model-builder -> threat-model.md
+handshake-analyzer -> handshake-flow.md
+state-machine-auditor -> state-machine.md
+invariant-checker -> invariants.md
+naming-binding-auditor -> naming.md
+primitive-selector -> primitives.md
+proof-strategy-checker -> proof-sketch.md
+attack-pattern-checker -> findings.md
+```
 
-### Review Scope
+Cross-reference findings against `SKILL.md` §3 and assign severity using the rubric in §2.10.
+
+## Review Scope
 
 | In Scope | Out of Scope |
 |----------|--------------|
 | Handshake flows | Constant-time code |
 | Key derivation | Side channels |
 | Primitive selection | RNG internals |
-| Authentication binding | Library CVEs |
-| FS/PCS/HNDL | Implementation bugs |
-| Replay/downgrade | Named implementation configs |
-| State machines | |
-
----
+| Authentication and identity binding | Library CVEs |
+| FS/PCS/HNDL claims | Named implementation configuration audits |
+| Replay/downgrade resistance | Memory safety |
+| State machines | Fuzzing |
 
 ## Directory Structure
 
-```
-flaw-examples/          # Known vulnerable protocols for validation
-  ssl3_rfc6101.txt      # POODLE-vulnerable SSL 3.0
-  tls12_rfc5246.txt     # TLS 1.2 (BEAST, Lucky13)
-  tls1compression.txt    # CRIME/BREACH
-  ipsec_esp.txt         # Bit-flipping vulnerabilities
-  dh_key_agreement.txt   # Small subgroup attack
-  ...
-review/                 # Validated review reports
-  SUMMARY.md            # Validation results
+```text
+flaw-examples/          # Legacy or flawed specifications used for validation
+  ssl3_rfc6101.txt
+  tls12_rfc5246.txt
+  tls1compression.txt
+  ipsec_esp.txt
+  ipsec_ah.txt
+  ipsec_hmac.txt
+  ipsec_ah_esp.txt
+  dh_key_agreement.txt
+  arpitools.txt        # RFC 5247 EAP Key Management Framework
+review/                 # Cleaned review reports
+  SUMMARY.md
   ssl3_review.md
   tls12_review.md
-  ...
+  tlscompression_review.md
+  ipsec_esp_review.md
+  ipsec_ah_review.md
+  hmac_sha1_96_review.md
+  ipsec_overview_review.md
+  dh_review.md
+  arp_review.md         # Reviews arpitools.txt/RFC 5247; filename retained
 ```
 
----
+## Validated Examples
 
-## Validated Protocols
-
-| Protocol | Verdict | Critical Issues |
-|----------|---------|-----------------|
-| SSL 3.0 | FAIL | MAC-then-encrypt, version rollback |
-| TLS 1.2 | FAIL | BEAST, Lucky13, Bleichenbacher |
-| TLS Compression | FAIL | CRIME/BREACH |
-| IPsec ESP | FAIL | Bit-flipping, no authentication |
-| Diffie-Hellman | FAIL | Small subgroup attack |
-| ARP | FAIL | No authentication |
-
----
+| Source | Protocol | Verdict | Main issues |
+|--------|----------|---------|-------------|
+| `ssl3_rfc6101.txt` | SSL 3.0 | FAIL | POODLE/CBC MtE, RSA-PKCS#1 v1.5, weak/export suites |
+| `tls12_rfc5246.txt` | TLS 1.2 | FAIL | RSA/static suites, CBC MtE, renegotiation/resumption binding gaps |
+| `tls1compression.txt` | TLS Compression | FAIL | Compression before encryption |
+| `ipsec_esp.txt` | IPsec ESP | FAIL | Encryption without auth, legacy algorithms, optional anti-replay |
+| `ipsec_ah.txt` | IPsec AH | PASS-WITH-FIXES | 96-bit ICVs, legacy MACs, optional anti-replay |
+| `ipsec_hmac.txt` | HMAC-SHA-1-96 | PASS-WITH-FIXES | 96-bit tag and SHA-1 legacy profile |
+| `ipsec_ah_esp.txt` | ESP NULL | PASS-WITH-FIXES | No confidentiality by design; requires strong auth |
+| `dh_key_agreement.txt` | RFC 2631 DH | FAIL | Optional validation, weak params, SHA-1 KDF, static-static mode |
+| `arpitools.txt` | EAP Key Management | FAIL / conditional | RADIUS MD5, channel binding, AAA key transport, freshness dependencies |
 
 ## What Remains for Human Auditors
 
-Even with automated review, human experts must verify:
+Human experts must still verify:
 
-1. **Cryptographic proof correctness** - Reduction targets, assumptions, ideal-model usage
-2. **Implementation-specific side channels** - Timing attacks on decryption, branch prediction
-3. **Constant-time verification** - Memory access patterns, secret-dependent branches
-4. **Formal verification** - ProVerif/Tamarin models match the spec
-5. **Edge cases** - Protocol state confusion, error handling, reconnection races
-6. **New attack variants** - Attack patterns not yet in catalog
-7. **Primitive combinations** - Cross-protocol interactions, composition issues
-8. **Regulatory compliance** - FIPS 140-3, EMV, payment network requirements
-
----
+1. Cryptographic proof correctness
+2. Implementation-specific side channels
+3. Constant-time behavior
+4. Formal verification models
+5. Edge-case state handling
+6. Attack variants not in the catalog
+7. Primitive composition and cross-protocol interactions
+8. Regulatory and deployment-specific requirements
 
 ## Security Auditing Is Not Complete Without
 
 - [ ] Peer review by cryptographers with domain expertise
 - [ ] Formal methods verification
 - [ ] Reference implementation audit
-- [ ] Fuzzing against the implementation
-- [ ] Real-world deployment testing
+- [ ] Fuzzing against implementations
+- [ ] Deployment and configuration review
 - [ ] Incident response planning
-
----
 
 ## References
 
 - RFC 8446 (TLS 1.3), RFC 9180 (HPKE), RFC 9420 (MLS)
 - NIST FIPS 203 (ML-KEM), FIPS 204 (ML-DSA), FIPS 205 (SLH-DSA)
-- Signal: X3DH, PQXDH
-- Attacks: Bleichenbacher (1998), ROBOT (2017), FREAK/Logjam, KRACK, Triple Handshake
-
----
+- Signal X3DH and PQXDH
+- Attacks: Bleichenbacher, POODLE, CRIME/BREACH, ROBOT, FREAK/Logjam, KRACK, Triple Handshake
 
 **Last updated:** July 2026

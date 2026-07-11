@@ -1,104 +1,146 @@
 # Protocol Review: IPsec ESP (RFC 2406)
 
-**Scope:** protocol logic only
-**Source:** /home/john/crypto-protocol-review/flaw-examples/ipsec_esp.txt
+**Scope:** protocol logic only  
+**Source:** `flaw-examples/ipsec_esp.txt` (RFC 2406)
+
+---
+
+## ⚠️ Important Limitations
+
+**This report is a reference, not a replacement for expert review.**
+
+- AI-generated protocol analysis can miss critical vulnerabilities
+- Cryptography engineering requires peer-reviewed expertise
+- Formal verification (ProVerif, Tamarin) and implementation audit are required
+- Side channels, constant-time code, and RNG internals are out of scope
+
+**For production systems, engage certified cryptography engineers and conduct formal verification before deployment.**
+
+*As JP Aumasson noted in [Murphy's Laws of Cryptography](https://www.aumasson.jp/murphy.html): "Any large enough system will include broken cryptography" and "New cryptography generates new attacks." Cryptographic protocol design is exceptionally difficult — failures are subtle, consequences are catastrophic, and automated analysis cannot catch all flaws.*
+
+---
 
 ## Summary
-Findings: 1 Critical, 2 High, 1 Medium, 0 Low, 0 Info
-Verdict: FAIL
+
+Findings: 1 Critical, 3 High, 2 Medium, 1 Low, 0 Info  
+Verdict: **FAIL**
+
+ESP correctly prefers encrypt-then-MAC when both services are selected, but allows encryption with NULL authentication, legacy algorithms (DES-CBC MTI), and optional anti-replay — enabling bit-flipping and weak deployments.
 
 ## Goals, Threat Model, Invariants, Primitives, Proof Strategy
-See respective artifacts. Goals: confidentiality (optional), data origin authentication (optional), integrity (optional), anti-replay (optional but requires authentication).
+
+| Artifact | Summary |
+|----------|---------|
+| Goals | Optional confidentiality; optional auth/integrity; optional anti-replay (requires auth) |
+| Constraint | At least one of conf or auth MUST be selected (§1, §5) — both may not be NULL simultaneously |
+| Threat model | On-path active attacker; passive eavesdropper |
+| Key mgmt | Manual keys or IKE (out of document) — FS depends on IKE/PFS |
+| Proof | Informal |
 
 ## Findings
 
-### F-001 — Encryption-Only Mode Permits Bit-Flipping Attacks
+### F-001 — Encryption without authentication (NULL auth)
 - **Severity:** Critical
-- **Pattern IDs:** C2, A1
-- **Location:** Section 2.7 (Authentication Data), Section 3.3.2 (Packet Encryption), Section 5 (Conformance Requirements)
-- **Description:** RFC 2406 permits ESP to be configured with encryption-only (NULL authentication). The mandatory-to-implement encryption algorithm is DES-CBC (RFC 2405). When authentication is disabled, there is no integrity protection whatsoever on the ciphertext. An attacker can flip bits in the CBC ciphertext, which produces predictable changes in decrypted plaintext, enabling practical bit-flipping attacks against confidentiality-only SAs.
-- **Attacker scenario:** A man-in-the-middle intercepts an ESP packet sent with confidentiality-only (authentication=NULL). By XORing a selected bit into a ciphertext block at offset p, the attacker causes the corresponding bit in the decrypted plaintext of that block to flip. By carefully positioning the flip (e.g., in the Payload Data or Next Header field), the attacker can manipulate the decrypted content without detection. The receiver processes the modified packet as valid since no ICV check occurs.
-- **Affected goals:** IND (indistinguishability), KS (key secrecy), EA (encryption/authentication binding)
-- **References:** Bellovin 1996 ("Problem Areas for the IP Security Protocols"); Vaudenay 2002 (padding oracle class); CRYPTO 2000 (CBC bit-flipping)
-- **Fix:** Mandate authentication whenever encryption is used. If ESP is used without AH, require the authentication service. Alternatively, use AES-GCM or AES-CCM which provide authenticated encryption.
-
-### F-002 — CBC Mode Without Authentication Allows Cut-and-Paste Attacks
-- **Severity:** High
 - **Pattern IDs:** C2
-- **Location:** Section 3.3.2; Section 5 (mandates DES-CBC)
-- **Description:** The spec mandates DES-CBC as the default encryption algorithm. CBC mode is inherently malleable without an accompanying MAC. An attacker can collect ciphertext blocks from one SA and paste them into another SA's packets (or same SA if the IV is predictable), or reorder ciphertext blocks, causing predictable plaintext modifications upon decryption. The default padding scheme (Section 2.4) offers only limited protection if receivers check padding values, but this is not mandatory.
-- **Attacker scenario:** Attacker captures ciphertext blocks from multiple packets. By rearranging or combining blocks from different packets, the attacker creates new valid ciphertext that decrypts to chosen plaintext patterns. This enables modification of payload data, Next Header values, or padding length without detection.
-- **Affected goals:** INT (integrity), IND
-- **References:** RFC 2405 (DES-CBC with explicit IV); Bellovin 1996
-- **Fix:** Use AES-GCM, AES-CCM, or ChaCha20-Poly1305 which provide authenticated encryption. If CBC must be used, apply HMAC after encryption (Encrypt-then-MAC) with a domain-separated key.
+- **Location:** §1; §2.7 Authentication Data optional; §5 (both MUST NOT be NULL, but conf-only allowed)
+- **Description:** ESP may run with confidentiality and NULL authentication. Unauthenticated CBC (DES-CBC MTI) is malleable: bit flips in ciphertext produce predictable plaintext changes.
+- **Attacker scenario:** MITM flips bits in Payload Data / Next Header / padding on conf-only SA; receiver accepts modified plaintext (Bellovin 1996 class).
+- **Affected goals:** INT, EA, IND
+- **References:** Bellovin, “Problem Areas for the IP Security Protocols” (1996); RFC 2406 §1, §5
+- **Fix:** Mandate authentication whenever encryption is used; prefer AEAD (AES-GCM). Prohibit conf-only SAs.
 
-### F-003 — No Ephemeral Key Contribution When Using Static Keys
+### F-002 — Mandatory-to-implement DES-CBC
 - **Severity:** High
-- **Pattern IDs:** F1
-- **Location:** Section 3.3.1 (Security Association Lookup); Section 5 (Conformance Requirements); IKE RFC 2409 (referenced in Section 1)
-- **Description:** RFC 2406 supports manual key management and IKE (RFC 2409) which may establish SAs without Diffie-Hellman key agreement. When static pre-shared keys or RSA-based IKE authentication is used without DH, the session encryption key has no ephemeral contribution. Compromise of the static key compromises all past and future sessions (no forward secrecy).
-- **Attacker scenario:** If an attacker records encrypted traffic and later obtains the static long-term key (via cryptanalysis, key extraction, or coercion), they can decrypt all previously recorded traffic and all future traffic until the key is rotated. This is especially problematic for long-lived SAs.
-- **Affected goals:** FS (forward secrecy), PCS (post-compromise security)
-- **References:** RFC 2409 (IKE); RFC 2401 (IPsec Architecture)
-- **Fix:** Mandate DH or ECDH key agreement for all automated key management. Deprecate static key-only configurations for ESP. If PFS is required, use DH with appropriate group size.
+- **Pattern IDs:** N7, C2
+- **Location:** §5 Conformance; DES-CBC profile
+- **Description:** DES-CBC is MTI: 56-bit key, 64-bit block (Sweet32-class issues for long-lived bulk).
+- **Attacker scenario:** Brute-force DES or birthday collision on 64-bit blocks under high volume.
+- **Affected goals:** KS, IND, classical-param-strength
+- **References:** RFC 2405; Sweet32; NIST SP 800-131A
+- **Fix:** AES-GCM/CCM or ChaCha20-Poly1305; drop DES.
 
-### F-004 — Encrypt-then-MAC but Authentication Protects Ciphertext Not Plaintext
+### F-003 — Anti-replay optional at receiver
+- **Severity:** High
+- **Pattern IDs:** R9
+- **Location:** §2.5 Sequence Number; §3.3.3; §3.4.3
+- **Description:** Sequence numbers always sent, but receiver may disable anti-replay. Without window, replays succeed under valid ICV.
+- **Attacker scenario:** Replay captured ESP packets when anti-replay off or window not shared across multi-homed receivers.
+- **Affected goals:** REPLAY
+- **References:** RFC 2406 §3.4.3
+- **Fix:** Mandate anti-replay for unicast SAs; durable shared state for multi-endpoint.
+
+### F-004 — FS not provided by ESP alone (static/manual keys)
+- **Severity:** High
+- **Pattern IDs:** F1, A9
+- **Location:** Manual keying; SA keys as traffic keys
+- **Description:** ESP consumes SA keys; manual or non-PFS IKE yields no FS. Long-term key material directly protects traffic.
+- **Attacker scenario:** Record ESP; later obtain SA/LT key → decrypt history.
+- **Affected goals:** FS, KS
+- **References:** RFC 2401/2409 interaction
+- **Fix:** IKE with mandatory PFS (ephemeral DH); short SA lifetimes.
+
+### F-005 — NULL encryption with weak/NULL auth configurations
 - **Severity:** Medium
-- **Pattern IDs:** C3
-- **Location:** Section 3.3.2 (lines 604-614), Section 3.3.4 (ICV calculation), Section 3.4.4 (ICV verification)
-- **Description:** The spec correctly specifies encrypt-then-authenticate: "encryption is performed first, before the authentication" (Section 3.3.2 line 604). However, the ICV is computed over the ESP packet minus the Authentication Data field (Section 3.3.4 lines 651-656), which means it covers the ciphertext, not the plaintext. This creates a mismatch: decryption is required before ICV verification can confirm plaintext integrity. If authentication fails, the receiver has already performed a wasted decryption. More critically, when authentication is NULL, there is no integrity on either ciphertext or plaintext.
-- **Attacker scenario:** If an implementation attempts to optimize by deferring decryption until after ICV verification (parallel processing per Section 3.4.4), a timing or cache side channel could leak plaintext from corrupted ciphertext. Additionally, the design does not prevent chosen ciphertext attacks where modification of ciphertext is not detected until after decryption.
-- **Affected goals:** INT, EA
-- **References:** RFC 2406 Section 3.3.2, 3.3.4
-- **Fix:** For CBC-based modes without a separate MAC, this design is inherently flawed. Switch to AEAD modes (AES-GCM, ChaCha20-Poly1305) where authentication and encryption are integrated. If separate authentication is required, apply MAC to plaintext (MAC-then-encrypt) with proper domain separation.
+- **Pattern IDs:** C2, A1
+- **Location:** §1; NULL encrypt profiles
+- **Description:** Spec forbids simultaneous NULL+NULL but allows NULL encrypt + weak MAC. Auth-only is intentional for some deployments but easy to misconfigure.
+- **Attacker scenario:** Misconfiguration → cleartext plus forgeable packets if MAC weak/NULL.
+- **Affected goals:** KS, INT
+- **References:** RFC 2410; RFC 2406 §5
+- **Fix:** Policy: require strong AEAD; config lint against weak pairs.
+
+### F-006 — 96-bit ICV profiles common with ESP auth
+- **Severity:** Medium
+- **Pattern IDs:** C16
+- **Location:** HMAC-MD5-96 / HMAC-SHA-1-96 usage with ESP
+- **Description:** Truncated 96-bit tags (online forgery ~2^96) below modern 128-bit floor without strong justification.
+- **Attacker scenario:** Large-scale online forgery attempts against ICV (costly but below 128-bit design target).
+- **Affected goals:** INT, MA
+- **References:** RFC 2403/2404; SKILL.md C16
+- **Fix:** 128-bit+ tags or AEAD.
+
+### F-007 — No HNDL / classical-only algorithms
+- **Severity:** Low
+- **Pattern IDs:** F6
+- **Location:** Algorithm suite (1998-era)
+- **Description:** HNDL unclaimed — Low/Info smell for long-term conf.
+- **Attacker scenario:** Harvest-now decrypt-later.
+- **Affected goals:** HNDL (unclaimed)
+- **References:** —
+- **Fix:** Modern IKEv2 + PQ hybrid if required.
 
 ## Coverage Matrix
 
 | Goal | Enforced | Confidence | Threat model | Notes |
 |------|----------|------------|--------------|-------|
-| KS (Key Secrecy) | Partial | High | Static keys allowed, no FS | F-003 |
-| IND (Indistinguishability) | No | High | Encryption-only mode enables attacks | F-001 |
-| INT (Integrity) | No | High | Authentication optional; encryption-only has no INT | F-001, F-002 |
-| EA (Encryption/Auth binding) | No | High | Encryption without auth allowed | F-001 |
-| MA (Mutual Authentication) | Optional | Medium | Per-SA; not mandated with encryption | F-001 |
-| FS (Forward Secrecy) | No | High | Static keys with no DH contribution | F-003 |
-| PCS (Post-Compromise) | No | Medium | No ratchet or healing mechanism in ESP | F-3 |
-| REPLAY (Anti-replay) | Optional | Medium | Requires authentication; disabled by sender | R7 |
+| KS | Partial | High | Passive + key compromise | Depends on alg/keys |
+| IND | No | High | Active | Conf-only malleability |
+| INT | Partial | High | Active | Only if auth selected |
+| EA | Partial | High | Active | EtM when both on |
+| MA | Partial | High | Active | Optional |
+| KA | N/A | — | — | IKE scope |
+| FS | No | High | LT/SA key leak | Not in ESP |
+| PCS | N/A | — | — | Not claimed |
+| FUT | N/A | — | — | Not claimed |
+| HNDL | N/A | — | — | Unclaimed |
+| DEN | N/A | — | — | — |
+| ANO | N/A | — | — | SPI/IP metadata clear |
+| REPLAY | Partial | High | Network | Optional |
+| DG | N/A | — | — | IKE negotiation |
+| KCI | N/A | — | — | — |
+| UKS | N/A | — | — | — |
+| BIND | Partial | Medium | — | SPI/SA binding |
+| FR | Partial | High | — | Seq when anti-replay on |
+| classical-param-strength | No | High | — | DES MTI |
 
-## Attack Pattern Checklist
+## Catalog Checklist (highlights)
 
-| Pattern ID | Description | Result |
-|------------|-------------|--------|
-| A1 | Missing mutual authentication | YES - Encryption-only SA has no authentication |
-| A2 | Unknown key-share | No |
-| A3 | Channel ID reuse | No |
-| A4 | KCI | No (auth optional) |
-| A5 | Identity misbinding | No |
-| A6 | Reflection attack | No |
-| A7 | Cross-protocol key reuse | No |
-| A8 | TOFU without downgrade | No |
-| A9 | LTK used directly | YES - Static keys used as session keys |
-| R1 | Replay of Finished | N/A |
-| R2 | Replay of key-exchange | No (anti-replay optional) |
-| R3-R5 | Downgrade attacks | No |
-| R6 | Rollback | No |
-| R7 | 0-RTT replay | N/A (no 0-RTT in ESP) |
-| R8 | Resumption without binding | No (no resumption in ESP) |
-| R9 | Stale message replay | Possible with anti-replay disabled |
-| K1 | KDF without domain separation | Unknown (depends on algorithm spec) |
-| K2 | KDF without transcript | Unknown |
-| K6 | Bidirectional keys no per-direction | No (per-direction keys via SA) |
-| K10 | Non-contributory KEX | YES - Static keys with IKE (no DH) |
-| K11 | Missing key confirmation | YES - No key confirmation in ESP |
-| C1 | Nonce reuse | Possible if counter overflows |
-| C2 | CBC without MAC | YES - DES-CBC without mandatory MAC |
-| C3 | Encrypt-then-MAC misimplemented | PARTIAL - Correct order but MAC-on-ciphertext |
-| C4 | ECB for structured data | No |
-| C5 | CTR with reused counter | Possible (IV reuse in CBC) |
-| C6 | Stream cipher nonce reuse | No (CBC mode) |
-| C10 | Same key both directions | Per-SA, unidirectional |
-| F1 | No ephemeral contribution | YES - Static keys without DH |
-| F2 | Static DH claimed FS | N/A |
-| F5 | LTK directly encrypts traffic | YES - Static keys for ESP encryption |
-| F8 | Resumption reuses old keys | No resumption |
-| PV1-PV5 | EC point validation | N/A (no DH in ESP spec) |
+| ID | Result | Reason |
+|----|--------|--------|
+| C2 | **Yes** | Conf-only / unauth CBC |
+| C16 | Yes | 96-bit ICV profiles |
+| F1 | Yes | Manual/static SA keys |
+| R9 | Yes | Optional anti-replay |
+| N7 | Yes | DES still MTI |
+| A1 | Partial | Auth optional |
+| Other §3 | No/N/A | — |

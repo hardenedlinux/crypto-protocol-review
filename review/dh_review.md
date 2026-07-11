@@ -1,68 +1,135 @@
 # Protocol Review: Diffie-Hellman Key Agreement Method (RFC 2631)
 
 **Scope:** protocol logic only  
-**Source:** RFC 2631 (flaw-examples/dh_key_agreement.txt)
+**Source:** `flaw-examples/dh_key_agreement.txt` (RFC 2631)
+
+---
+
+## ⚠️ Important Limitations
+
+**This report is a reference, not a replacement for expert review.**
+
+- AI-generated protocol analysis can miss critical vulnerabilities
+- Cryptography engineering requires peer-reviewed expertise
+- Formal verification (ProVerif, Tamarin) and implementation audit are required
+- Side channels, constant-time code, and RNG internals are out of scope
+
+**For production systems, engage certified cryptography engineers and conduct formal verification before deployment.**
+
+*As JP Aumasson noted in [Murphy's Laws of Cryptography](https://www.aumasson.jp/murphy.html): "Any large enough system will include broken cryptography" and "New cryptography generates new attacks." Cryptographic protocol design is exceptionally difficult — failures are subtle, consequences are catastrophic, and automated analysis cannot catch all flaws.*
+
+---
 
 ## Summary
-Findings: 1 Critical, 1 High, 2 Medium, 0 Low, 0 Info  
-Verdict: FAIL
+
+Findings: 2 Critical, 2 High, 2 Medium, 0 Low, 0 Info  
+Verdict: **FAIL**
+
+RFC 2631 standardizes ANSI X9.42-style DH with optional public-key validation, SHA-1 KDF, static-static mode without FS, and weak historical parameter floors (q ≥ 160).
 
 ## Goals, Threat Model, Invariants, Primitives, Proof Strategy
-See goals.md, threat-model.md, invariants.md, primitives.md, proof-sketch.md.
+
+| Artifact | Summary |
+|----------|---------|
+| Goals | Shared secret ZZ → keying material for symmetric KEKs; recipient certified |
+| Modes | Ephemeral-Static (MUST); Static-Static (MAY) |
+| Threat model | Active MITM on public keys; small-subgroup; LT key compromise |
+| Primitives | FF-DH; SHA-1 KDF; 3DES KEK examples |
+| Proof | Informal; cites [LAW98][LL97] |
 
 ## Findings
 
-### F-001 — Small Subgroup Attack (K10) Due to Optional Public Key Validation
+### F-001 — Public-key validation optional (small-subgroup / non-contributory)
 - **Severity:** Critical
 - **Pattern IDs:** K10, PV2, PV4
-- **Location:** §2.1.5 (Public Key Validation); §2.3 (Ephemeral-Static mode); §2.4 (Static-Static mode)
-- **Description:** RFC 2631 defines public key validation as an optional ("MAY be used") check. The validation consists of: (1) verify y ∈ [2, p−1], and (2) verify y^q mod p == 1. In Ephemeral-Static mode, the recipient "SHOULD" perform validation (§2.3). In Static-Static mode, both parties "SHOULD" perform validation or rely on CA verification (§2.4). Since validation is not mandatory (MUST NOT be omitted), an attacker who is an active MITM can inject a small-order public key, forcing the shared secret ZZ into a small subgroup of size << q, which trivially breaks the key agreement. The protocol acknowledges this attack in the Security Considerations section (§"Static Diffie-Hellman keys are vulnerable to a small subgroup attack") but only recommends (SHOULD), not mandates (MUST), validation.
-- **Attacker scenario:** An active MITM attacker intercepts the DH exchange. Instead of forwarding the honest party's public key yb, the attacker substitutes yb' = g^s mod p where s is chosen so that yb' has small order (e.g., order 2, 4, or q's small factors). When the honest party computes ZZ = (yb')^xa mod p, the result lies in the small subgroup controlled by the attacker, who can then recover ZZ and any derived keys.
-- **Affected goals:** KA (key agreement), KS (key secrecy), IND (indistinguishability), FS (forward secrecy)
-- **References:** RFC 2631 §2.1.5, §2.3, §2.4, Security Considerations; [LAW98] L. Law et al., "An efficient protocol for authenticated key agreement"; [LL97] C.H. Lim and P.J. Lee, "A key recovery attack on discrete log-based schemes using a prime order subgroup" (Crypto '97)
-- **Fix:** Change public key validation from "MAY be used" to "MUST be performed" for all DH public keys received over the network. Alternatively, generate keys that are inherently resistant to small subgroup attacks as described in [LL97].
+- **Location:** §2.1.5 (MAY validate); §2.3 SHOULD validate ephemeral; §2.4 SHOULD validate or trust CA; Security Considerations
+- **Description:** Validation of y (range + y^q ≡ 1 mod p) is not MUST. Accepting small-order y forces ZZ into a tiny subgroup → attacker recovers ZZ.
+- **Attacker scenario:** MITM substitutes small-order public key; peer computes weak ZZ; attacker brute-forces subgroup and derives KM.
+- **Affected goals:** KS, KA, IND
+- **References:** RFC 2631 §2.1.5, §2.3–2.4; Lim-Lee [LL97]
+- **Fix:** MUST validate peer public keys (or use safe primes / approved groups with mandatory checks per SP 800-56A).
 
-### F-002 — Weak Hash Function in Key Derivation (SKILL.md §2.8)
+### F-002 — Static-static mode: no FS under LT compromise
+- **Severity:** Critical
+- **Pattern IDs:** F1, F2, A4
+- **Location:** §2.4 Static-Static Mode
+- **Description:** Both parties use long-term DH keys; ZZ repeats modulo partyAInfo. No ephemeral contribution → compromise of either LT private key exposes past ZZ (and enables KCI-class issues for static-static DH AKEs).
+- **Attacker scenario:** Steal static DH private key → recompute historical ZZ for captured transcripts (partyAInfo often known).
+- **Affected goals:** FS, KS, KCI
+- **References:** RFC 2631 §2.4; SKILL.md F1/A4
+- **Fix:** Prefer Ephemeral-Static or ephemeral-ephemeral; rotate static keys; treat static-static as non-FS.
+
+### F-003 — SHA-1 used as KDF hash
 - **Severity:** High
-- **Pattern IDs:** (Primitive selection — out-of-scope catalog section)
-- **Location:** §2.1.2 (Generation of Keying Material)
-- **Description:** RFC 2631 specifies SHA-1 (FIPS-180) as the hash function H for deriving keying material: KM = H(ZZ || OtherInfo). SHA-1 is deprecated for cryptographic use due to known collision attacks (Shattered, 2017). While no practical collision attack against HMAC-SHA-1 is known, the use of SHA-1 in a KDF construction is a design smell and may fail modern compliance requirements (NIST SP 800-131A Rev. 2 recommends SHA-256 or stronger).
-- **Attacker scenario:** Not directly exploitable with current known attacks on HMAC-SHA-1, but the weakness in SHA-1 weakens the overall security margin. A breakthrough in SHA-1 cryptanalysis could compromise the key derivation.
-- **Affected goals:** KS (key secrecy)
-- **References:** FIPS-180 (SHA-1); NIST SP 800-131A Rev. 2; SHA-1 collision (Shattered, 2017)
-- **Fix:** Replace SHA-1 with SHA-256 or SHA-384 in the key derivation. The fix is backward-compatible if both parties update their implementation.
+- **Pattern IDs:** K3, N7
+- **Location:** §2.1.2 KM = H(ZZ ‖ OtherInfo) with H = SHA-1
+- **Description:** Single SHA-1 invocations (counter-style) derive keying material. SHA-1 disallowed for new KDF/PRF per §2.8; non-uniform ZZ should use a modern Extract (HKDF).
+- **Attacker scenario:** Weakens long-term security margin; compliance failure.
+- **Affected goals:** KS
+- **References:** FIPS 180; NIST SP 800-56C / RFC 5869
+- **Fix:** HKDF-SHA-256+ or SP 800-56C with SHA-256+.
 
-### F-003 — Weak 3DES Key Wrapping with Short MAC Tags
-- **Severity:** Medium
-- **Pattern IDs:** C16 (truncated MAC), C10 (same key used for both directions)
-- **Location:** §2.1.3 (KEK Computation), §2.1.4 (Keylengths)
-- **Description:** RFC 2631 specifies 3-key 3DES-EDE for key wrapping with only a 64-bit MAC in the inner CBC structure (per the CMS "key wrap" algorithm). The 3DES effective key space is only ~112 bits due to meet-in-the-middle, and 64-bit MAC tags are below the 128-bit threshold recommended for modern AEADs. Additionally, the KEK derivation uses the same key material for both directions (K1, K2, K3 derived from KM blocks are used for both wrap and unwrap operations in 3DES-EDE).
-- **Attacker scenario:** A birthday-parity attack on the 64-bit MAC could enable forgery of key wrap data within 2^32 operations. The weak 3DES key is also vulnerable to brute-force search given sufficient ciphertext.
-- **Affected goals:** INT (integrity), KS (key secrecy)
-- **References:** NIST SP 800-67 (3DES); RFC 3394 (AES Key Wrap); C16 (SKILL.md)
-- **Fix:** Migrate to AES-128 or AES-256 in GCM mode (AES-GCM provides both encryption and authentication with 128-bit tags). Use per-direction key labels in the KDF to derive distinct KEKs for each direction.
+### F-004 — Parameter size floor (q ≥ 160) below modern 128-bit target
+- **Severity:** High
+- **Pattern IDs:** N7
+- **Location:** §2.2 (m ≥ 160 ⇒ q ≥ 160)
+- **Description:** 160-bit subgroup ≈80-bit classical security — below silent 128-bit default (need ≥256-bit ECC or FF ≥3072 / large q).
+- **Attacker scenario:** NFS/index-calculus against undersized groups (Logjam-class if weak/shared primes).
+- **Affected goals:** KS, classical-param-strength
+- **References:** NIST SP 800-57; RFC 7919
+- **Fix:** Named groups ffdhe3072+ or ECDH X25519/P-256+.
 
-### F-004 — No Mandatory Fresh Ephemeral Contribution Per Session
+### F-005 — partyAInfo freshness only loosely constrained
 - **Severity:** Medium
-- **Pattern IDs:** F1 (No ephemeral contribution to session key), F3 (No fresh DH per message)
-- **Location:** §2.3 (Ephemeral-Static mode), §2.4 (Static-Static mode)
-- **Description:** In Static-Static mode (§2.4), both parties use long-term static DH key pairs. Since the same key pairs are reused across sessions, ZZ is identical across sessions unless partyAInfo differs. The specification requires partyAInfo to be different per message, but the entropy still derives solely from the static DH values and partyAInfo (which is chosen by the sender, not both parties). There is no per-message fresh DH contribution from the ephemeral component, unlike Ephemeral-Static mode where the sender generates a new ephemeral key pair per message. This means each session's ZZ is not independently generated from fresh randomness contributed by both parties.
-- **Attacker scenario:** If partyAInfo is leaked or predictable across sessions, an attacker who has captured a prior session's ZZ and partyAInfo can derive subsequent session keys, compromising forward secrecy for those sessions.
-- **Affected goals:** FS (forward secrecy), PCS (post-compromise security)
-- **References:** SKILL.md F1, F3
-- **Fix:** Use Ephemeral-Static mode (mandatory per §2.3) for all sessions requiring forward secrecy. Alternatively, introduce a mandatory fresh ephemeral contribution from both parties (e.g., a DH key exchange with both sides generating ephemerals) to achieve contributory agreement per session.
+- **Pattern IDs:** R2, FR
+- **Location:** §2.1.2–2.1.3; §2.3–2.4
+- **Description:** Static-static requires distinct partyAInfo per message, but peer may not cryptographically verify uniqueness/monotonicity beyond local policy.
+- **Attacker scenario:** Replay or reuse of OtherInfo contexts → related keying material.
+- **Affected goals:** FR, REPLAY
+- **References:** RFC 2631 §2.4
+- **Fix:** Bind transcript nonces from both parties; reject reused partyAInfo under same static pair.
+
+### F-006 — 3DES KEK examples / short MAC in historical wrap
+- **Severity:** Medium
+- **Pattern IDs:** N7, C16
+- **Location:** §2.1.3–2.1.4
+- **Description:** Examples target 3DES KEKs; legacy wrap tags short vs 128-bit floor.
+- **Attacker scenario:** Weak KEK brute force / short-tag forgery on wrap.
+- **Affected goals:** KS, INT
+- **References:** NIST SP 800-67; AES-KW RFC 3394
+- **Fix:** AES-KeyWrap / AES-GCM; 128-bit+ tags.
 
 ## Coverage Matrix
 
 | Goal | Enforced | Confidence | Threat model | Notes |
 |------|----------|------------|--------------|-------|
-| KA (key agreement) | Partial | High | MITM attacker | K10 vulnerability allows forced small-subgroup ZZ |
-| KS (key secrecy) | Partial | Medium | Passive/active | SHA-1 KDF weakens margin; small-subgroup can expose ZZ |
-| IND (indistinguishability) | Partial | Medium | MITM attacker | Key derivation from small-subgroup ZZ is breakable |
-| INT (integrity) | Partial | Medium | Forger | 64-bit MAC tag in 3DES key wrap is below modern standard |
-| FS (forward secrecy) | No | High | Session key exposure | Static-static mode has no ephemeral contribution per session |
-| PCS (post-compromise) | No | High | Long-term key exposure | No ratchet or healing mechanism |
-| EA (entity authentication) | Yes | High | MITM attacker | Static certificates provide authentication in both modes |
-| KCI (key compromise impersonation) | Yes | High | Long-term key exposure | Static DH does not prevent KCI |
-| UKS (unknown key-share) | No | Medium | Malicious peer | No explicit UKS protection documented |
-| REPLAY | Partial | High | Replay attacker | partyAInfo required per-message in static-static but not validated |
+| KS | No | High | Active + LT | K10, static-static, weak params |
+| IND | No | High | Active | Weak ZZ |
+| INT | Partial | Medium | — | Depends on KEK use |
+| EA | N/A | — | — | Method is KE, not AEAD |
+| MA | N/A | — | — | — |
+| KA | Partial | Medium | MITM | Cert on recipient; validation optional |
+| FS | No | High | LT compromise | Static-static; E-S better |
+| PCS | N/A | — | — | Not claimed |
+| FUT | N/A | — | — | Not claimed |
+| HNDL | N/A | — | — | Classical FF only |
+| DEN | N/A | — | — | — |
+| ANO | N/A | — | — | — |
+| REPLAY | Partial | Medium | Active | partyAInfo |
+| DG | N/A | — | — | No negotiation |
+| KCI | No | High | LT | Static-static DH |
+| UKS | Partial | Medium | Peer | Cert binding external |
+| BIND | Partial | Medium | — | OtherInfo labels |
+| FR | Partial | Medium | — | partyAInfo |
+| classical-param-strength | No | High | — | q≥160 |
+
+## Catalog Checklist (highlights)
+
+| ID | Result | Reason |
+|----|--------|--------|
+| K10, PV2, PV4 | **Yes** | Optional validation |
+| F1, F2, A4 | **Yes** | Static-static |
+| K3 | Yes | SHA-1 KDF / non-Extract |
+| N7 | Yes | Weak floors, 3DES, SHA-1 |
+| PQ* | N/A | No PQ |
+| Other §3 | No/N/A | — |

@@ -1,128 +1,122 @@
-# Protocol Review: IPsec AH/ESP Overview (RFC 2410) v1.0
+# Protocol Review: ESP NULL Encryption (RFC 2410)
 
 **Scope:** protocol logic only  
-**Source:** RFC 2410 - The NULL Encryption Algorithm and Its Use With IPsec
+**Source:** `flaw-examples/ipsec_ah_esp.txt` (RFC 2410)
+
+---
+
+## ⚠️ Important Limitations
+
+**This report is a reference, not a replacement for expert review.**
+
+- AI-generated protocol analysis can miss critical vulnerabilities
+- Cryptography engineering requires peer-reviewed expertise
+- Formal verification (ProVerif, Tamarin) and implementation audit are required
+- Side channels, constant-time code, and RNG internals are out of scope
+
+**For production systems, engage certified cryptography engineers and conduct formal verification before deployment.**
+
+*As JP Aumasson noted in [Murphy's Laws of Cryptography](https://www.aumasson.jp/murphy.html): "Any large enough system will include broken cryptography" and "New cryptography generates new attacks." Cryptographic protocol design is exceptionally difficult — failures are subtle, consequences are catastrophic, and automated analysis cannot catch all flaws.*
+
+---
 
 ## Summary
-Findings: 2 Medium, 2 Low, 1 Info
-Verdict: PASS-WITH-FIXES
+
+Findings: 0 Critical, 0 High, 2 Medium, 2 Low, 1 Info  
+Verdict: **PASS-WITH-FIXES**
+
+ESP_NULL is the identity transform: no confidentiality by design. Acceptable only when strong authentication is mandated and operators understand the non-goal. Residual risk is misconfiguration (NULL+weak/NULL auth) and weaker header coverage than AH.
 
 ## Goals, Threat Model, Invariants, Primitives, Proof Strategy
-This review focuses on the NULL encryption algorithm specification and its implications for IPsec ESP security properties.
+
+| Artifact | Summary |
+|----------|---------|
+| Goals | Enable ESP without encryption (auth-only ESP); interoperability |
+| Non-goals | Confidentiality |
+| Constraint | RFC 2406: conf and auth MUST NOT both be NULL |
+| Proof | Explicit security note §4 |
 
 ## Findings
 
-### F-001 — NULL Encryption Provides Zero Confidentiality
+### F-001 — Zero confidentiality (by design; misconfiguration risk)
 - **Severity:** Medium
-- **Pattern IDs:** C2, C6
-- **Location:** Section 2; "NULL(b) = I(b) = b"
-- **Description:** The NULL encryption algorithm is defined as the identity function - it transforms plaintext into identical ciphertext. The document explicitly states "The NULL encryption algorithm offers no confidentiality nor does it offer any other security service" (Section 4). The algorithm requires 0-bit keys and 0-bit IVs due to its stateless nature.
-- **Attacker scenario:** An attacker monitoring traffic using ESP_NULL sees all plaintext traffic in the clear. If a deployer mistakenly believes ESP_NULL provides any security service (e.g., through confusion with "ESP with NULL encryption" vs "ESP with strong encryption"), they have deployed a protocol that offers no protection whatsoever.
-- **Affected goals:** CONF (confidentiality), EA (encryption authentication)
-- **References:** RFC 2410 Section 4
-- **Fix:** The specification correctly identifies this as a documentation issue rather than a cryptographic flaw. Deployments must ensure ESP_NULL is only used when authentication without confidentiality is explicitly required, and that both endpoints understand no confidentiality is provided.
+- **Pattern IDs:** C2
+- **Location:** §2 NULL(b)=b; §4 Security Considerations
+- **Description:** Ciphertext equals plaintext. Spec correctly states no confidentiality. Severity Medium reflects deployment footgun when operators expect “ESP ⇒ encrypted.”
+- **Attacker scenario:** Passive read of all application data on ESP_NULL SAs.
+- **Affected goals:** KS, IND (not provided)
+- **References:** RFC 2410 §4
+- **Fix:** Document non-goal in policy; alert on ESP_NULL in production unless auth-only is explicit.
 
-### F-002 — Authentication Mandatory Requirement Not Enforced by Protocol
+### F-002 — Depends on strong authentication; protocol does not enforce strength
 - **Severity:** Medium
 - **Pattern IDs:** A1, C2
-- **Location:** Section 4; "it is imperative that an ESP SA specifies the use of at least one cryptographically strong encryption algorithm or one cryptographically strong authentication algorithm or one of each"
-- **Description:** The RFC acknowledges that ESP allows configurations where neither encryption nor authentication is strong or present. While the document states the requirement for "at least one cryptographically strong" algorithm, the protocol definition itself permits NULL encryption without authentication, or weak algorithm selections. The phrase "or one of each" creates ambiguity about what constitutes acceptable minimal security.
-- **Attacker scenario:** A misconfigured ESP deployment using NULL encryption (no confidentiality) combined with no or weak authentication provides an attacker with complete visibility into traffic and the ability to forge or modify packets if authentication is also NULL or weak.
-- **Affected goals:** EA (encryption authentication), MA (message authentication), INT (integrity)
-- **References:** RFC 2410 Section 4; RFC 2406 (ESP)
-- **Fix:** The ESP specification should require authentication as mandatory when any encryption is employed, and should prohibit NULL encryption in production environments without explicit documentation of the security tradeoff.
-
-### F-003 — ESP_NULL Does Not Authenticate IP Header (vs AH)
-- **Severity:** Low
-- **Pattern IDs:** A5
-- **Location:** Section 1; "ESP_NULL does not include the IP header in calculating the authentication data"
-- **Description:** Unlike AH which authenticates the immutable-in-transit portions of the IP header, ESP_NULL only authenticates the ESP payload. This creates a security differential: two packets with identical ESP payload but different IP header fields (e.g., source/destination) would appear valid to ESP_NULL but could be routed differently or be subject to IP-level attacks.
-- **Attacker scenario:** An attacker capable of modifying IP header fields (which travel in plaintext with ESP) could potentially redirect or manipulate traffic without detection by ESP_NULL, since only the encrypted payload is authenticated.
+- **Location:** §4 (“imperative… strong encryption or strong authentication”)
+- **Description:** Security relies on ESP auth algorithm strength. Framework allows weak MACs; imperative is advisory prose, not a machine-checkable mandate of algorithm strength.
+- **Attacker scenario:** ESP_NULL + weak/truncated MAC → cleartext + forgery.
 - **Affected goals:** INT, MA
-- **References:** RFC 2410 Section 1; RFC 2402 (AH)
-- **Fix:** Document the security difference between AH and ESP_NULL clearly. Consider whether ESP_NULL should optionally support IP header authentication.
+- **References:** RFC 2410 §4; RFC 2406
+- **Fix:** Policy: ESP_NULL only with ≥128-bit ICV / modern MAC; ban NULL auth.
 
-### F-004 — Combined Mode Security Boundary Ambiguity
+### F-003 — ESP_NULL does not authenticate outer IP header like AH
 - **Severity:** Low
-- **Pattern IDs:** CP6, C2
-- **Location:** Section 1; "further information on how the various pieces of ESP fit together"
-- **Description:** The RFC references ESP combined mode (using both encryption and authentication) but does not specify how authentication data is computed over the ciphertext vs plaintext. This leaves ambiguity about whether authentication covers the IV/padding or only plaintext, which affects the security property against chosen-ciphertext attacks.
-- **Attacker scenario:** Depending on implementation, a combined-mode ESP that authenticates plaintext instead of ciphertext (or vice versa) may be vulnerable to padding oracle or other modification attacks if the authentication is not properly applied.
+- **Pattern IDs:** — (scope vs AH)
+- **Location:** §1 comparison to AH
+- **Description:** ICV covers ESP payload fields, not the outer IP header immutable set AH would cover.
+- **Attacker scenario:** Outer header manipulation without ESP ICV failure (routing/QoS games).
+- **Affected goals:** INT (header)
+- **References:** RFC 2410 §1; RFC 2402
+- **Fix:** Use AH or tunnel mode when outer/inner header auth required.
+
+### F-004 — Combined-mode composition deferred to ESP
+- **Severity:** Low
+- **Pattern IDs:** C2, C3
+- **Location:** §1 references to ESP combined use
+- **Description:** NULL profile does not restate EtM ordering; implementers must follow RFC 2406 (encrypt then auth). Risk is documentation gap, not a new algorithm.
+- **Attacker scenario:** Wrong composition if implementer ignores ESP base spec.
 - **Affected goals:** INT, EA
-- **References:** RFC 2406 (ESP Combined Mode)
-- **Fix:** ESP combined mode specifications should unambiguously define authentication coverage (Encrypt-then-MAC is recommended to prevent oracle attacks).
+- **References:** RFC 2406 §3.3.2
+- **Fix:** Normative cross-ref: MUST implement ESP processing order.
 
-### F-005 — No IV Reuse Analysis for CBC Modes
+### F-005 — No IV/key material (stateless)
 - **Severity:** Info
-- **Pattern IDs:** C1, C6
-- **Location:** Section 2.2; cryptographic synchronization
-- **Description:** The document notes NULL is stateless and does not require IV transmission. However, this is specific to NULL encryption. The RFC does not address IV handling for other ESP encryption algorithms (CBC mode), which is deferred to RFC 2406. IV reuse in CBC mode leads to confidentiality break (C1).
-- **Attacker scenario:** N/A for NULL encryption
-- **Affected goals:** N/A for NULL mode
-- **References:** RFC 2406 for CBC IV requirements
-- **Fix:** No fix needed for NULL; ensure RFC 2406 properly specifies IV handling requirements.
-
-## Attack Pattern Checklist (SKILL.md §3)
-
-### Authentication / Identity
-| Pattern | Result | Notes |
-|---------|--------|-------|
-| A1 — Missing mutual authentication | N/A | ESP can use NULL auth; AH provides auth only |
-| A2 — Unknown key-share | No | Key binding not discussed in NULL spec |
-| A3 — Channel ID reuse | No | Per-SA identification |
-| A4 — KCI | No | Long-term keys not involved |
-| A5 — Identity misbinding | **Yes** | ESP_NULL doesn't auth IP header vs AH |
-| A6 — Reflection attack | No | Stateless |
-| A7 — Cross-protocol key reuse | No | NULL keys are 0-bits |
-| A8 — Trust-on-first-use | No | IKE provides key exchange |
-| A9 — LTK as session key | No | NULL requires no key |
-
-### Replay / Ordering / Rollback
-| Pattern | Result | Notes |
-|---------|--------|-------|
-| R1-R9 | N/A | Replay protection deferred to ESP/AH specs |
-
-### Key Derivation
-| Pattern | Result | Notes |
-|---------|--------|-------|
-| K1-K13 | N/A | NULL is identity function; no key derivation |
-
-### Confidentiality / Encryption
-| Pattern | Result | Notes |
-|---------|--------|-------|
-| C1 — Nonce reuse under same key | **Yes** | NULL is stateless (no nonce), but this creates false sense of security |
-| C2 — CBC without MAC | **Yes** | Combined mode ambiguity (C2 applies to ESP overall, not just NULL) |
-| C3 — Encrypt-then-MAC misimpl | **Yes** | Combined mode unspecified |
-| C4 — ECB | No | Not applicable |
-| C5 — CTR reuse | No | NULL not CTR |
-| C6 — Stream cipher nonce reuse | N/A | NULL stateless, no nonce |
-| C7-C16 | N/A | Not applicable to NULL |
-
-### Forward / Future Secrecy
-| Pattern | Result | Notes |
-|---------|--------|-------|
-| F1-F9 | N/A | NULL provides no keying material |
-
-### Point Validation / EC
-| Pattern | Result | Notes |
-|---------|--------|-------|
-| PV1-PV5 | N/A | Not applicable |
-
-### Other Categories
-- **Signatures (S1-S10):** N/A
-- **Negotiation (N1-N7):** Deferred to IKE/ESP
-- **Randomness (RD1-RD7):** N/A for NULL
-- **Post-quantum (PQ1-PQ4):** N/A (1998 RFC)
-- **Metadata (M1-M4):** **Yes** - All metadata visible with NULL encryption
-- **Modern Frameworks:** N/A
-- **PAKE:** N/A
-- **Composition (CP2-CP6):** **Yes** - CP6 transcript ambiguity in combined mode
+- **Pattern IDs:** —
+- **Location:** §2.2
+- **Description:** Correct for identity transform; N/A for C1.
+- **Attacker scenario:** N/A
+- **Affected goals:** —
+- **References:** RFC 2410 §2
+- **Fix:** None.
 
 ## Coverage Matrix
-| Goal | Enforced | Confidence | Threat Model | Notes |
+
+| Goal | Enforced | Confidence | Threat model | Notes |
 |------|----------|------------|--------------|-------|
-| CONF | No | N/A | NULL provides none | Clear from spec |
-| EA | Partial | Medium | MITM can see traffic | NULL |
-| INT | Yes (if auth used) | High | Per-AH comparison | ESP_NULL only covers payload |
-| MA | Yes (if auth used) | High | Same | Only with auth algorithm |
-| FS | N/A | N/A | N/A | Not applicable to NULL |
+| KS | No | High | Passive | By design |
+| IND | No | High | Passive | By design |
+| INT | Partial | Medium | Active | Requires strong ESP auth |
+| EA | Partial | Medium | Active | Same |
+| MA | Partial | Medium | Active | Same |
+| KA | N/A | — | — | — |
+| FS | N/A | — | — | No conf |
+| PCS | N/A | — | — | — |
+| FUT | N/A | — | — | — |
+| HNDL | N/A | — | — | — |
+| DEN | N/A | — | — | — |
+| ANO | N/A | — | — | Cleartext |
+| REPLAY | Partial | Medium | Network | ESP seq + auth |
+| DG | N/A | — | — | — |
+| KCI | N/A | — | — | — |
+| UKS | N/A | — | — | — |
+| BIND | N/A | — | — | — |
+| FR | Partial | Medium | — | Seq |
+| classical-param-strength | N/A | — | — | Depends on auth alg |
+
+## Catalog Checklist (highlights)
+
+| ID | Result | Reason |
+|----|--------|--------|
+| C2 | Yes (expected) | No encryption |
+| A1 | Partial | Auth strength not enforced |
+| C1 | N/A | No IV |
+| Other §3 | N/A or No | — |
